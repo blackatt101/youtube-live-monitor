@@ -378,11 +378,23 @@ class YouTubeLiveDetector implements LiveDetectionProviderInterface
             }
         }
 
-        // Method 2: Page title containing "LIVE"
-        if ($pageTitle && stripos($pageTitle, 'LIVE') !== false) {
+        // Method 2: Page title containing "LIVE" or video info
+        if ($pageTitle) {
             $videoId = $this->extractVideoIdFromHtml($html);
             if ($videoId) {
+                // Use page title, clean it up
                 $title = preg_replace('/\s*-\s*YouTube\s*$/i', '', $pageTitle);
+
+                // If title is too generic, try to get better title from ytInitialData
+                if (in_array(strtolower($title), ['live', 'live stream', 'youtube', $handle])) {
+                    $ytInitialData = $this->extractYtInitialData($html);
+                    if ($ytInitialData) {
+                        $betterTitle = $this->findVideoTitle($ytInitialData, $videoId);
+                        if ($betterTitle) {
+                            $title = $betterTitle;
+                        }
+                    }
+                }
 
                 return LiveDetectionResult::live(
                     channelId: $channelId,
@@ -392,6 +404,23 @@ class YouTubeLiveDetector implements LiveDetectionProviderInterface
                     thumbnail: "https://i.ytimg.com/vi/{$videoId}/maxresdefault.jpg",
                     detectionMethod: 'page_title',
                 );
+            }
+
+            // Even without video ID, if page title suggests live content
+            if (stripos($pageTitle, 'live') !== false || stripos($pageTitle, 'streaming') !== false) {
+                $title = preg_replace('/\s*-\s*YouTube\s*$/i', '', $pageTitle);
+                // Try to find video in the page
+                $videoId = $this->extractVideoIdFromHtml($html);
+                if ($videoId) {
+                    return LiveDetectionResult::live(
+                        channelId: $channelId,
+                        channelHandle: $handle,
+                        videoId: $videoId,
+                        title: $title ?: 'Live Stream',
+                        thumbnail: "https://i.ytimg.com/vi/{$videoId}/maxresdefault.jpg",
+                        detectionMethod: 'page_title',
+                    );
+                }
             }
         }
 
@@ -496,43 +525,53 @@ class YouTubeLiveDetector implements LiveDetectionProviderInterface
     /**
      * Find video title by videoId
      */
-    private function findVideoTitle(array $data, string $videoId): ?string
-    {
-        $result = null;
+private function findVideoTitle(array $data, string $videoId): ?string
+{
+    $result = null;
 
-        // Method 1: Look for videoRenderer with matching videoId
-        array_walk_recursive($data, function ($item) use ($videoId, &$result) {
-            if (is_array($item) && isset($item['videoRenderer']['videoId']) && $item['videoRenderer']['videoId'] === $videoId) {
-                $video = $item['videoRenderer'];
-                if (isset($video['title']['runs'])) {
-                    $result = implode('', array_column($video['title']['runs'], 'text'));
+    $walk = function ($node) use (&$walk, $videoId, &$result) {
+        if (!is_array($node) || $result !== null) {
+            return;
+        }
+
+        // Find an object containing the target videoId
+        if (($node['videoId'] ?? null) === $videoId) {
+            if (isset($node['title']['runs']) &&
+is_array($node['title']['runs'])) {
+                $title = '';
+
+                foreach ($node['title']['runs'] as $run) {
+                    $title .= $run['text'] ?? '';
+                }
+
+                if (trim($title) !== '') {
+                    $result = trim($title);
+                    return;
                 }
             }
-        });
 
-        if ($result) return $result;
+            if (isset($node['title']['simpleText'])) {
+                $title = trim($node['title']['simpleText']);
 
-        // Method 2: Look for videoId directly with title
-        array_walk_recursive($data, function ($item, $key) use ($videoId, &$result) {
-            if ($key === 'videoId' && $item === $videoId) {
-                // Check if this array has title
-                if (is_array($item) && isset($item['title']['runs'][0]['text'])) {
-                    $result = $item['title']['runs'][0]['text'];
+                if ($title !== '') {
+                    $result = $title;
+                    return;
                 }
             }
-            // Also check parent context
-            if (is_array($item) && isset($item['videoId']) && $item['videoId'] === $videoId) {
-                if (isset($item['title']['runs'][0]['text'])) {
-                    $result = $item['title']['runs'][0]['text'];
-                } elseif (isset($item['title']['simpleText'])) {
-                    $result = $item['title']['simpleText'];
-                }
+        }
+
+        // Continue recursively through child arrays
+        foreach ($node as $value) {
+            if (is_array($value)) {
+                $walk($value);
             }
-        });
+        }
+    };
 
-        return $result;
-    }
+    $walk($data);
 
+    return $result;
+}
     /**
      * Find viewer count in data
      */
