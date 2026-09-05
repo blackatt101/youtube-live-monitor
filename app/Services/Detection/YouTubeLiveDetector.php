@@ -378,52 +378,35 @@ class YouTubeLiveDetector implements LiveDetectionProviderInterface
             }
         }
 
-        // Method 2: Page title containing "LIVE" or video info
-        if ($pageTitle) {
-            $videoId = $this->extractVideoIdFromHtml($html);
-            if ($videoId) {
-                // Use page title, clean it up
-                $title = preg_replace('/\s*-\s*YouTube\s*$/i', '', $pageTitle);
+// Method 2: Page title explicitly indicating live content
+if ($pageTitle && (stripos($pageTitle, 'LIVE') !== false || stripos($pageTitle, 'STREAMING') !== false)) {
+    $title = preg_replace('/\s*-\s*YouTube\s*$/i', '', $pageTitle);
+    $videoId = $this->extractVideoIdFromHtml($html);
 
-                // If title is too generic, try to get better title from ytInitialData
-                if (in_array(strtolower($title), ['live', 'live stream', 'youtube', $handle])) {
-                    $ytInitialData = $this->extractYtInitialData($html);
-                    if ($ytInitialData) {
-                        $betterTitle = $this->findVideoTitle($ytInitialData, $videoId);
-                        if ($betterTitle) {
-                            $title = $betterTitle;
-                        }
-                    }
-                }
+    if ($videoId) {
+        // If title is generic, try to get the actual video title
+        if (in_array(strtolower(trim($title)), ['live', 'live stream', 'streaming', 'youtube', strtolower($handle)])) {
+            $ytInitialData = $this->extractYtInitialData($html);
 
-                return LiveDetectionResult::live(
-                    channelId: $channelId,
-                    channelHandle: $handle,
-                    videoId: $videoId,
-                    title: $title,
-                    thumbnail: "https://i.ytimg.com/vi/{$videoId}/maxresdefault.jpg",
-                    detectionMethod: 'page_title',
-                );
-            }
+            if ($ytInitialData) {
+                $betterTitle = $this->findVideoTitle($ytInitialData, $videoId);
 
-            // Even without video ID, if page title suggests live content
-            if (stripos($pageTitle, 'live') !== false || stripos($pageTitle, 'streaming') !== false) {
-                $title = preg_replace('/\s*-\s*YouTube\s*$/i', '', $pageTitle);
-                // Try to find video in the page
-                $videoId = $this->extractVideoIdFromHtml($html);
-                if ($videoId) {
-                    return LiveDetectionResult::live(
-                        channelId: $channelId,
-                        channelHandle: $handle,
-                        videoId: $videoId,
-                        title: $title ?: 'Live Stream',
-                        thumbnail: "https://i.ytimg.com/vi/{$videoId}/maxresdefault.jpg",
-                        detectionMethod: 'page_title',
-                    );
+                if ($betterTitle) {
+                    $title = $betterTitle;
                 }
             }
         }
 
+        return LiveDetectionResult::live(
+            channelId: $channelId,
+            channelHandle: $handle,
+            videoId: $videoId,
+            title: $title ?: 'Live Stream',
+            thumbnail: "https://i.ytimg.com/vi/{$videoId}/maxresdefault.jpg",
+            detectionMethod: 'page_title',
+        );
+    }
+}
         // No live stream found - channel is offline
         return LiveDetectionResult::offline(
             channelId: $channelId,

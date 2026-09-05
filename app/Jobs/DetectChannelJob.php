@@ -103,12 +103,14 @@ class DetectChannelJob implements ShouldQueue
             ->where('youtube_video_id', $result->videoId)
             ->first();
 
-        if ($existingStream) {
-            // Update existing stream (viewer count, etc.)
-            $existingStream->update([
-                'viewer_count' => $result->viewerCount,
-                'detected_at' => now(),
-            ]);
+	if ($existingStream) {
+    		// Update existing stream with latest detection data
+    		$existingStream->update([
+        		'title' => $result->title ?: $existingStream->title,
+        		'thumbnail' => $result->thumbnail ?: $existingStream->thumbnail,
+        		'viewer_count' => $result->viewerCount,
+       			'detected_at' => now(),
+   		 ]);
         } else {
             // End any previous live streams for this channel
             LiveStream::where('monitored_channel_id', $this->channel->id)

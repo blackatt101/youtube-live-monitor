@@ -98,16 +98,33 @@ class ChannelController extends Controller
                     'viewer_count' => $result->viewerCount,
                     'detected_at' => now(),
                 ]);
-            } else {
-                // End any previous live streams for this channel
-                LiveStream::where('monitored_channel_id', $channel->id)
-                    ->where('status', LiveStream::STATUS_LIVE)
-                    ->update([
-                        'status' => LiveStream::STATUS_ENDED,
-                        'ended_at' => now(),
-                    ]);
+} else {
+    // End any previous live streams for this channel.
+    // If an ended record for the same video already exists,
+    // remove the duplicate live record instead of violating
+    // the unique_live_stream_per_video constraint.
+    $previousLiveStreams = LiveStream::where('monitored_channel_id', $channel->id)
+        ->where('status', LiveStream::STATUS_LIVE)
+        ->where('youtube_video_id', '!=', $result->videoId)
+        ->get();
 
-                // Create new stream record
+    foreach ($previousLiveStreams as $previousStream) {
+        $endedExists = LiveStream::where('monitored_channel_id', $channel->id)
+            ->where('youtube_video_id', $previousStream->youtube_video_id)
+            ->where('status', LiveStream::STATUS_ENDED)
+            ->exists();
+
+        if ($endedExists) {
+            $previousStream->delete();
+        } else {
+            $previousStream->update([
+                'status' => LiveStream::STATUS_ENDED,
+                'ended_at' => now(),
+            ]);
+        }
+    }
+
+    // Create new stream record
                 LiveStream::create([
                     'monitored_channel_id' => $channel->id,
                     'youtube_video_id' => $result->videoId,
@@ -125,14 +142,27 @@ class ChannelController extends Controller
                 'is_live' => true,
                 'last_live_at' => now(),
             ]);
+} else {
+    // Channel is offline - end all active live streams safely.
+    $activeStreams = LiveStream::where('monitored_channel_id', $channel->id)
+        ->where('status', LiveStream::STATUS_LIVE)
+        ->get();
+
+    foreach ($activeStreams as $activeStream) {
+        $endedExists = LiveStream::where('monitored_channel_id', $channel->id)
+            ->where('youtube_video_id', $activeStream->youtube_video_id)
+            ->where('status', LiveStream::STATUS_ENDED)
+            ->exists();
+
+        if ($endedExists) {
+            $activeStream->delete();
         } else {
-            // Channel is offline - end all active live streams
-            LiveStream::where('monitored_channel_id', $channel->id)
-                ->where('status', LiveStream::STATUS_LIVE)
-                ->update([
-                    'status' => LiveStream::STATUS_ENDED,
-                    'ended_at' => now(),
-                ]);
+            $activeStream->update([
+                'status' => LiveStream::STATUS_ENDED,
+                'ended_at' => now(),
+            ]);
+        }
+    }
 
             // Update channel status
             $channel->update(['is_live' => false]);
