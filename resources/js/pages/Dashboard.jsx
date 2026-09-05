@@ -1,11 +1,11 @@
 import { useState, useEffect } from 'react';
 import AppLayout from '@/Layouts/AppLayout';
 import { useChannels, useChannelActions } from '@/hooks/useChannels';
-import StatsBar from '@/Components/StatsBar';
-import SearchBar from '@/Components/SearchBar';
-import ChannelRow from '@/Components/ChannelRow';
-import AddChannelModal from '@/Components/AddChannelModal';
-import { ToastProvider, useToast } from '@/Components/Toast';
+import StatsBar from '@/components/StatsBar';
+import SearchBar from '@/components/SearchBar';
+import ChannelRow from '@/components/ChannelRow';
+import AddChannelModal from '@/components/AddChannelModal';
+import { ToastProvider, useToast } from '@/components/Toast';
 
 function DashboardInner() {
     const { success, error: showError } = useToast();
