@@ -525,6 +525,9 @@ class YouTubeLiveDetector implements LiveDetectionProviderInterface
     /**
      * Find video title by videoId
      */
+/**
+ * Find video title by videoId
+ */
 private function findVideoTitle(array $data, string $videoId): ?string
 {
     $result = null;
@@ -534,10 +537,9 @@ private function findVideoTitle(array $data, string $videoId): ?string
             return;
         }
 
-        // Find an object containing the target videoId
+        // Method 1: Find an object containing the target videoId
         if (($node['videoId'] ?? null) === $videoId) {
-            if (isset($node['title']['runs']) &&
-is_array($node['title']['runs'])) {
+            if (isset($node['title']['runs']) && is_array($node['title']['runs'])) {
                 $title = '';
 
                 foreach ($node['title']['runs'] as $run) {
@@ -552,6 +554,34 @@ is_array($node['title']['runs'])) {
 
             if (isset($node['title']['simpleText'])) {
                 $title = trim($node['title']['simpleText']);
+
+                if ($title !== '') {
+                    $result = $title;
+                    return;
+                }
+            }
+        }
+
+        // Method 2: YouTube watch page structure
+        // videoPrimaryInfoRenderer -> title
+        if (isset($node['videoPrimaryInfoRenderer']['title'])) {
+            $titleData = $node['videoPrimaryInfoRenderer']['title'];
+
+            if (isset($titleData['runs']) && is_array($titleData['runs'])) {
+                $title = '';
+
+                foreach ($titleData['runs'] as $run) {
+                    $title .= $run['text'] ?? '';
+                }
+
+                if (trim($title) !== '') {
+                    $result = trim($title);
+                    return;
+                }
+            }
+
+            if (isset($titleData['simpleText'])) {
+                $title = trim($titleData['simpleText']);
 
                 if ($title !== '') {
                     $result = $title;
