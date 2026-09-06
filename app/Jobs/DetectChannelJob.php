@@ -62,6 +62,7 @@ class DetectChannelJob implements ShouldQueue
             Log::channel('youtube')->info('Channel detection completed', [
                 'channel_id' => $this->channel->youtube_channel_id,
                 'status' => $result->status,
+                'started_at' => $result->startedAt?->toIso8601String(),
                 'duration_ms' => round($duration, 2),
             ]);
 
@@ -97,20 +98,20 @@ class DetectChannelJob implements ShouldQueue
      */
     private function handleLive(LiveDetectionResult $result): void
     {
-        // Find existing active stream for this channel
-        $existingStream = LiveStream::where('monitored_channel_id', $this->channel->id)
+        // Find existing active stream for this channel with same video ID
+        $existingLiveStream = LiveStream::where('monitored_channel_id', $this->channel->id)
             ->where('status', LiveStream::STATUS_LIVE)
             ->where('youtube_video_id', $result->videoId)
             ->first();
 
-	if ($existingStream) {
-    		// Update existing stream with latest detection data
-    		$existingStream->update([
-        		'title' => $result->title ?: $existingStream->title,
-        		'thumbnail' => $result->thumbnail ?: $existingStream->thumbnail,
-        		'viewer_count' => $result->viewerCount,
-       			'detected_at' => now(),
-   		 ]);
+        if ($existingLiveStream) {
+            // Update existing stream with latest detection data (preserve started_at)
+            $existingLiveStream->update([
+                'title' => $result->title ?: $existingLiveStream->title,
+                'thumbnail' => $result->thumbnail ?: $existingLiveStream->thumbnail,
+                'viewer_count' => $result->viewerCount,
+                'detected_at' => now(),
+            ]);
         } else {
             // End any previous live streams for this channel
             LiveStream::where('monitored_channel_id', $this->channel->id)
@@ -120,17 +121,41 @@ class DetectChannelJob implements ShouldQueue
                     'ended_at' => now(),
                 ]);
 
-            // Create new stream record
-            LiveStream::create([
-                'monitored_channel_id' => $this->channel->id,
-                'youtube_video_id' => $result->videoId,
-                'title' => $result->title,
-                'thumbnail' => $result->thumbnail,
-                'started_at' => $result->startedAt ?? now(),
-                'viewer_count' => $result->viewerCount,
-                'status' => LiveStream::STATUS_LIVE,
-                'detected_at' => now(),
-            ]);
+            // Check if there's an ENDED stream with same video ID (stream went offline then live again)
+            $endedStream = LiveStream::where('monitored_channel_id', $this->channel->id)
+                ->where('status', LiveStream::STATUS_ENDED)
+                ->where('youtube_video_id', $result->videoId)
+                ->first();
+
+            if ($endedStream) {
+                // Reactivate the ended stream with NEW started_at from API
+                $endedStream->update([
+                    'status' => LiveStream::STATUS_LIVE,
+                    'title' => $result->title ?: $endedStream->title,
+                    'thumbnail' => $result->thumbnail ?: $endedStream->thumbnail,
+                    'viewer_count' => $result->viewerCount,
+                    'started_at' => $result->startedAt ?? now(), // NEW start time from API
+                    'ended_at' => null,
+                    'detected_at' => now(),
+                ]);
+
+                Log::channel('youtube')->info('Reactivated ended stream', [
+                    'video_id' => $result->videoId,
+                    'new_started_at' => $endedStream->fresh()->started_at->toIso8601String(),
+                ]);
+            } else {
+                // Create new stream record with actual start time from API
+                LiveStream::create([
+                    'monitored_channel_id' => $this->channel->id,
+                    'youtube_video_id' => $result->videoId,
+                    'title' => $result->title,
+                    'thumbnail' => $result->thumbnail,
+                    'started_at' => $result->startedAt ?? now(), // Use actual start time from API
+                    'viewer_count' => $result->viewerCount,
+                    'status' => LiveStream::STATUS_LIVE,
+                    'detected_at' => now(),
+                ]);
+            }
         }
 
         // Update channel status

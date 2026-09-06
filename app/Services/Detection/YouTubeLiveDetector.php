@@ -341,6 +341,7 @@ class YouTubeLiveDetector implements LiveDetectionProviderInterface
                 }
                 $title = $title ?: 'Live Stream';
                 $viewerCount = $this->findViewerCount($ytInitialData);
+                $startedAt = $this->findStreamStartTime($ytInitialData, $videoId);
 
                 return LiveDetectionResult::live(
                     channelId: $channelId,
@@ -349,7 +350,7 @@ class YouTubeLiveDetector implements LiveDetectionProviderInterface
                     title: $title,
                     thumbnail: "https://i.ytimg.com/vi/{$videoId}/maxresdefault.jpg",
                     viewerCount: $viewerCount,
-                    startedAt: Carbon::now(),
+                    startedAt: $startedAt,
                     detectionMethod: 'currentVideoEndpoint',
                 );
             }
@@ -365,6 +366,7 @@ class YouTubeLiveDetector implements LiveDetectionProviderInterface
                 }
                 $title = $title ?: 'Live Stream';
                 $viewerCount = $this->findViewerCount($ytInitialData);
+                $startedAt = $this->findStreamStartTime($ytInitialData, $liveData['videoId']);
 
                 return LiveDetectionResult::live(
                     channelId: $channelId,
@@ -373,6 +375,7 @@ class YouTubeLiveDetector implements LiveDetectionProviderInterface
                     title: $title,
                     thumbnail: $liveData['thumbnail'],
                     viewerCount: $viewerCount ?? $liveData['viewerCount'] ?? null,
+                    startedAt: $startedAt,
                     detectionMethod: 'LiveStreamability',
                 );
             }
@@ -397,12 +400,19 @@ if ($pageTitle && (stripos($pageTitle, 'LIVE') !== false || stripos($pageTitle, 
             }
         }
 
+        // Try to find start time from page data
+        $startedAt = null;
+        if ($ytInitialData) {
+            $startedAt = $this->findStreamStartTime($ytInitialData, $videoId);
+        }
+
         return LiveDetectionResult::live(
             channelId: $channelId,
             channelHandle: $handle,
             videoId: $videoId,
             title: $title ?: 'Live Stream',
             thumbnail: "https://i.ytimg.com/vi/{$videoId}/maxresdefault.jpg",
+            startedAt: $startedAt,
             detectionMethod: 'page_title',
         );
     }
@@ -596,6 +606,274 @@ private function findVideoTitle(array $data, string $videoId): ?string
                 $result = (int) $value;
             }
         });
+        return $result;
+    }
+
+    /**
+     * Find stream start time from YouTube page data
+     *
+     * YouTube typically shows when a stream started in formats like:
+     * - "Started 2 hours ago"
+     * - "Premiered 3 hours ago"
+     * - Timestamp like "2024-01-15T14:30:00Z"
+     *
+     * This method extracts that information and converts it to a Carbon datetime.
+     */
+    private function findStreamStartTime(array $data, string $videoId): ?Carbon
+    {
+        $startTime = null;
+
+        // Walk through the data looking for stream start information
+        array_walk_recursive($data, function ($value, $key) use (&$startTime, $videoId) {
+            // Look for video with matching ID
+            if (($key === 'videoId' || $key === 'video_id') && $value === $videoId) {
+                // Continue to look for start time in parent/sibling keys
+            }
+
+            // Look for liveStreamInformation which may contain start time
+            if (stripos($key, 'liveStream') !== false || stripos($key, 'startTime') !== false || stripos($key, 'startDate') !== false) {
+                if (is_string($value) || is_numeric($value)) {
+                    $parsed = $this->parseTimestamp($value);
+                    if ($parsed && ($startTime === null || $parsed->lt($startTime))) {
+                        $startTime = $parsed;
+                    }
+                }
+            }
+
+            // Look for dateText or text containing date info
+            if ($key === 'dateText' || $key === 'liveStreamDateText' || $key === 'previewPlaylistedTimeText') {
+                if (is_string($value)) {
+                    $parsed = $this->parseYouTubeDateText($value);
+                    if ($parsed && ($startTime === null || $parsed->lt($startTime))) {
+                        $startTime = $parsed;
+                    }
+                }
+            }
+
+            // Look for relative time strings like "2 hours ago"
+            if ($key === 'relativeTimeText' || $key === 'relativeTimeTextSimple') {
+                if (is_string($value)) {
+                    $parsed = $this->parseRelativeTime($value);
+                    if ($parsed && ($startTime === null || $parsed->lt($startTime))) {
+                        $startTime = $parsed;
+                    }
+                }
+            }
+        });
+
+        // If we couldn't find a start time, try to parse from the raw text
+        if ($startTime === null) {
+            $startTime = $this->searchForStartTimeInData($data, $videoId);
+        }
+
+        return $startTime;
+    }
+
+    /**
+     * Parse a timestamp string to Carbon
+     */
+    private function parseTimestamp(string|int|float $value): ?Carbon
+    {
+        // If it's already a Unix timestamp
+        if (is_numeric($value)) {
+            $timestamp = is_float($value) ? (int) $value : $value;
+            if ($timestamp > 1000000000 && $timestamp < 2000000000) {
+                // Looks like a Unix timestamp in seconds
+                return Carbon::createFromTimestamp($timestamp);
+            }
+            if ($timestamp > 1000000000000) {
+                // Looks like a Unix timestamp in milliseconds
+                return Carbon::createFromTimestampMs($timestamp);
+            }
+        }
+
+        // If it's an ISO8601 string
+        if (is_string($value)) {
+            // Try parsing various date formats
+            $formats = [
+                'Y-m-d\TH:i:s.uP',
+                'Y-m-d\TH:i:sP',
+                'Y-m-d\TH:i:s\Z',
+                'Y-m-d H:i:s',
+                'c', // ISO8601
+                'r', // RFC2822
+            ];
+
+            foreach ($formats as $format) {
+                try {
+                    $parsed = Carbon::createFromFormat($format, $value);
+                    if ($parsed && $parsed->isValid()) {
+                        return $parsed;
+                    }
+                } catch (\Exception $e) {
+                    // Continue to next format
+                }
+            }
+
+            // Try Carbon's natural parsing
+            try {
+                $parsed = Carbon::parse($value);
+                if ($parsed && $parsed->isValid() && $parsed->year >= 2000) {
+                    return $parsed;
+                }
+            } catch (\Exception $e) {
+                // Failed to parse
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * Parse YouTube's relative date text (e.g., "Started 2 hours ago")
+     */
+    private function parseYouTubeDateText(string $text): ?Carbon
+    {
+        // Patterns for various YouTube date formats
+        $patterns = [
+            // "Started 2 hours ago", "Premiered 3 days ago"
+            '/(?:started|premiered|began|streamed)\s+(\d+)\s+(second|minute|hour|day|week|month)s?\s+ago/i' => function ($matches) {
+                $amount = (int) $matches[1];
+                $unit = $matches[2];
+
+                $map = [
+                    'second' => 'subSeconds',
+                    'minute' => 'subMinutes',
+                    'hour' => 'subHours',
+                    'day' => 'subDays',
+                    'week' => 'subWeeks',
+                    'month' => 'subMonths',
+                ];
+
+                return Carbon::now()->$map[$unit]($amount);
+            },
+
+            // "Started yesterday"
+            '/started\s+yesterday/i' => function () {
+                return Carbon::yesterday();
+            },
+
+            // "Premiered on Jan 15, 2024"
+            '/(?:premiered|started)\s+on\s+([A-Za-z]+\s+\d{1,2},?\s+\d{4})/i' => function ($matches) {
+                return Carbon::parse($matches[1]);
+            },
+
+            // "Jan 15, 2024"
+            '/^([A-Za-z]+\s+\d{1,2},?\s+\d{4})$/' => function ($matches) {
+                return Carbon::parse($matches[1]);
+            },
+        ];
+
+        foreach ($patterns as $pattern => $handler) {
+            if (preg_match($pattern, $text, $matches)) {
+                $result = $handler($matches);
+                if ($result instanceof Carbon && $result->isValid()) {
+                    return $result;
+                }
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * Parse YouTube's relative time text (e.g., "2 hours ago")
+     */
+    private function parseRelativeTime(string $text): ?Carbon
+    {
+        $text = strtolower(trim($text));
+
+        // Handle "ago" suffix
+        $text = preg_replace('/\s+ago$/i', '', $text);
+
+        // Patterns for relative time
+        if (preg_match('/(\d+)\s+(second|minute|hour|day|week|month)s?/i', $text, $matches)) {
+            $amount = (int) $matches[1];
+            $unit = strtolower($matches[2]);
+
+            // Normalize plural to singular
+            if (substr($unit, -1) === 's') {
+                $unit = substr($unit, 0, -1);
+            }
+
+            $map = [
+                'second' => 'subSeconds',
+                'minute' => 'subMinutes',
+                'hour' => 'subHours',
+                'day' => 'subDays',
+                'week' => 'subWeeks',
+                'month' => 'subMonths',
+            ];
+
+            if (isset($map[$unit])) {
+                return Carbon::now()->$map[$unit]($amount);
+            }
+        }
+
+        // Handle "yesterday"
+        if (strpos($text, 'yesterday') !== false) {
+            return Carbon::yesterday();
+        }
+
+        return null;
+    }
+
+    /**
+     * Search for start time in a more comprehensive way
+     */
+    private function searchForStartTimeInData(array $data, string $videoId): ?Carbon
+    {
+        $result = null;
+
+        $search = function ($node) use (&$search, $videoId, &$result) {
+            if (!is_array($node)) {
+                return;
+            }
+
+            // Look for video data containing our videoId
+            if (isset($node['videoId']) && $node['videoId'] === $videoId) {
+                // Look for start time in this node or nearby
+                foreach (['startTime', 'startDate', 'liveStreamStartTime', 'broadcastDateTime'] as $key) {
+                    if (isset($node[$key])) {
+                        $parsed = $this->parseTimestamp($node[$key]);
+                        if ($parsed && ($result === null || $parsed->lt($result))) {
+                            $result = $parsed;
+                        }
+                    }
+                }
+            }
+
+            // Look for thumbnail data which might contain video ID
+            if (isset($node['thumbnail']) && is_array($node['thumbnail'])) {
+                foreach ($node['thumbnail'] as $thumb) {
+                    if (is_array($thumb) && isset($thumb['url'])) {
+                        if (preg_match('/\/vi\/' . preg_quote($videoId, '/') . '\//', $thumb['url'])) {
+                            // Found thumbnail for our video - look for time in parent
+                            foreach (['startTime', 'startDate', 'overlayTime'] as $key) {
+                                if (isset($node[$key])) {
+                                    $parsed = $this->parseTimestamp($node[$key]);
+                                    if ($parsed) {
+                                        if ($result === null || $parsed->lt($result)) {
+                                            $result = $parsed;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Continue searching
+            foreach ($node as $value) {
+                if (is_array($value)) {
+                    $search($value);
+                }
+            }
+        };
+
+        $search($data);
+
         return $result;
     }
 

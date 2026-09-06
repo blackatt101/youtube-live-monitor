@@ -4,6 +4,8 @@ namespace App\Providers;
 
 use App\Contracts\Services\LiveDetectionProviderInterface;
 use App\Services\Detection\YouTubeLiveDetector;
+use App\Services\Detection\YouTubeApiDetector;
+use App\Services\Detection\HybridDetectionService;
 use Illuminate\Support\ServiceProvider;
 
 class AppServiceProvider extends ServiceProvider
@@ -16,15 +18,19 @@ class AppServiceProvider extends ServiceProvider
         // Map provider names to classes
         $providers = [
             'youtube_direct' => YouTubeLiveDetector::class,
+            'youtube_api' => YouTubeApiDetector::class,
+            'hybrid' => HybridDetectionService::class,
             YouTubeLiveDetector::class => YouTubeLiveDetector::class,
+            YouTubeApiDetector::class => YouTubeApiDetector::class,
+            HybridDetectionService::class => HybridDetectionService::class,
         ];
 
-        // Get the configured provider or default to YouTubeLiveDetector
-        $configuredProvider = config('youtube.provider', 'youtube_direct');
-        $providerClass = $providers[$configuredProvider] ?? YouTubeLiveDetector::class;
+        // Get the configured provider or default to hybrid
+        $configuredProvider = config('youtube.provider', 'hybrid');
+        $providerClass = $providers[$configuredProvider] ?? HybridDetectionService::class;
 
-        // Register the provider as singleton
-        $this->app->singleton($providerClass, function ($app) {
+        // Register providers as singletons
+        $this->app->singleton(YouTubeLiveDetector::class, function ($app) {
             return new YouTubeLiveDetector(
                 timeout: config('youtube.timeout', 15),
                 maxRetries: config('youtube.max_retries', 2),
@@ -34,7 +40,19 @@ class AppServiceProvider extends ServiceProvider
             );
         });
 
-        // Bind the interface to the concrete implementation
+        $this->app->singleton(YouTubeApiDetector::class, function ($app) {
+            return new YouTubeApiDetector(
+                apiKey: config('youtube.api.key')
+            );
+        });
+
+        $this->app->singleton(HybridDetectionService::class, function ($app) {
+            return new HybridDetectionService(
+                apiKey: config('youtube.api.key')
+            );
+        });
+
+        // Bind the interface to the configured provider
         $this->app->bind(
             LiveDetectionProviderInterface::class,
             $providerClass

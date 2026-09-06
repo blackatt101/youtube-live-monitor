@@ -36,34 +36,22 @@ export function useChannels(options = {}) {
         }
     }, []);
 
-    // Initial fetch - with detection on mount if requested
+    // Initial fetch - just read from database (detection handled by scheduler)
     useEffect(() => {
-        if (forceRefreshOnMount) {
-            fetchChannels(true);
-            setLastDetectionTime(Date.now());
-        } else {
-            fetchChannels(false);
-        }
+        fetchChannels(false); // No refresh - scheduler handles detection
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []); // Only run once on mount
 
-    // Auto refresh
+    // Auto refresh - just fetch latest data from database (scheduler handles detection)
     useEffect(() => {
         if (!autoRefresh) return;
 
         const interval = setInterval(() => {
-            const now = Date.now();
-            const shouldDetect = now - lastDetectionTime >= detectionInterval;
-
-            if (shouldDetect) {
-                setLastDetectionTime(now);
-            }
-
-            fetchChannels(shouldDetect);
+            fetchChannels(false); // No refresh - just read from DB
         }, refreshInterval);
 
         return () => clearInterval(interval);
-    }, [autoRefresh, refreshInterval, fetchChannels, lastDetectionTime, detectionInterval]);
+    }, [autoRefresh, refreshInterval, fetchChannels]);
 
     // Filter channels
     const filteredChannels = channels.filter(channel => {

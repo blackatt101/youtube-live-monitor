@@ -11,7 +11,7 @@ return [
     | Options: youtube_direct, youtube_api, holodex
     |
     */
-    'provider' => env('YOUTUBE_DETECTION_PROVIDER', 'youtube_direct'),
+    'provider' => env('YOUTUBE_DETECTION_PROVIDER', 'hybrid'),
 
     /*
     |--------------------------------------------------------------------------
